@@ -3,7 +3,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta
 import itertools
 from collections import Counter # needed for complex merging to preserve duplicates in individual lists, but not in both
-
+import os
 
 ################################
 ########### Example ############
@@ -20,6 +20,8 @@ from collections import Counter # needed for complex merging to preserve duplica
 
 
 # adjustable parameters
+run_online = False
+
 Month_names = ['month0','Jan','Feb','March','April','May','June','July','Aug','Sept','Oct','Nov','Dec']
 feedpage_ws = 'Current Budget'
 expense_input_ws = 'Input From Expense Log'
@@ -33,8 +35,10 @@ datetime_format = '%m/%d/%Y %H:%M:%S'
 date_format = '%m/%d/%Y' # hopefully the same as BECU to cut down on formatting
 last_month_copy_description = 'Copy from End of Last Month'
 date_match_tolerance = timedelta(days=3)
-earliest_tracking_date = datetime(year=2017,month=10,day=1).date() # anything before this will be discarded
+earliest_tracking_date = datetime(year=2017,month=10,day=1).date() # anything before this will be 
 # other sheets are created and named dynamically based on month/year
+
+
 
 ################################
 ########### Methods ############
@@ -53,8 +57,23 @@ earliest_tracking_date = datetime(year=2017,month=10,day=1).date() # anything be
 #    workbook.worksheet('test sheet').update_cells(cell_list)   
 
 def main(fake_date=None):
-    '''driving function'''
-    # TODO: write a function that reads in rows in batch and returns and list of lists of cells with row/col indexes 
+    '''driving function''' 
+    # done: move the json file into a different folder on the pi and on my other computers so it isn't put on the github (might need to delete and recreate the github setup)
+    # done: create an offline budget sheet to play with and add an optional parameter to use that sheet for testing new features
+    # TODO: write a function that reads in rows in batch and returns a list of lists of cells with row/col indexes 
+    # done: alphabetize the final output of the categories on the main page (the appear in a random order each time)
+    # TODO: fix the 'previous month net' to actually be the previous month instead of the current month
+    # TODO: add support for combined expense logging
+    # TODO: add try/except blocks that will output an error message
+    # TODO: make a function that uses the budget balancer requests to modify parameters and retroactively change allotments
+    # TODO: delete old app entries when the timestamp is more than two weeks behind the latest bank entry
+    # TODO: add text message reminders/updates (number of unmatched expenses, pay rent reminder if category is positive, assessment of how we are doing on each category at end of month, etc.)
+    # continued: send a reminder/update text at the beginning of the month (or week) with:
+    #   how we are doing on categories, 
+    #   if we need to do some money transfers, 
+    #   remind us to input the latest bank record (if it has been too long)
+    #   and how many outstanding items need to be categorized
+    # TODO: add a log page that outputs what was done at each update (number of items matched, new month/week created, etc.)
     # rather than one long list. This will make switching out slow reading and writing faster 
     print('Getting Workbook')
     workbook = get_workbook()
@@ -81,9 +100,9 @@ def main(fake_date=None):
     # these variables are lists of objects from the classes
     print('Cleaning Up and Organizing Raw Input')
     app_input, bank_data, bank_unresolved, budget_parameters, budget_balancer_input = clean_input_up(app_input_raw, bank_data_raw, bank_unresolved_raw, budget_parameters_income_raw, budget_parameters_expenses_raw, budget_balancer_input_raw)
+    bank_data = delete_old_bank_data(bank_data) 
     bank_data = remove_duplicate_bank_entries(workbook, bank_data)
     bank_data = merge_bank_data_and_unresolved(bank_data, bank_unresolved)
-    bank_data = delete_old_bank_data(bank_data) 
     
     is_new_week, is_new_month = is_new_week_or_month(current_datetime, last_sync)
     
@@ -124,8 +143,7 @@ def main(fake_date=None):
     print('Balancing Budget')
     balance_budget()
     
-    if is_new_week:
-        print('Cleaning Up Old Form Entries and Deleting Blank Rows') #TODO: just add this feature into the move and delete method (make sure to check timestamp, not date)
+#    if is_new_week:
 #        clean_up_form_entries() # this needs to happen after the category assignments in case you assigned a very retroactive one
 #        possily send a text reminder here too
         
@@ -466,18 +484,23 @@ class Budget_balancer_entry:
 def get_workbook():
     # use creds to create a client to interact with the Google Drive API
     scope = ['https://spreadsheets.google.com/feeds']
-    creds = ServiceAccountCredentials.from_json_keyfile_name('client_secret.json', scope)
+#    creds = ServiceAccountCredentials.from_json_keyfile_name('client_secret.json', scope)
+    creds = ServiceAccountCredentials.from_json_keyfile_name(os.path.join(os.pardir, "client_secret_secure.json"), scope) # get json file from parent directory
+
     client = gspread.authorize(creds)
-    workbook = client.open("Blackburn Budget")
+    if run_online:
+        print('Using Online Spreadsheet')
+        workbook = client.open("Blackburn Budget")
+    else:
+        print('Using Offline Spreadsheet')
+        workbook = client.open("Test Budget")
     return workbook
 
 def read_last_sync(workbook):
     '''reads in the date and time the shreadsheet was most recently synconized'''
     worksheet = workbook.worksheet(feedpage_ws)
     last_sync_string = worksheet.cell(1,2).value
-    #print("Here's what was read:",last_sync_string)
     last_sync = datetime.strptime(last_sync_string, datetime_format)
-    #print("Here's what was returned:",last_sync)
     return last_sync
 
 def is_new_week_or_month(current_datetime, last_sync):
@@ -488,10 +511,6 @@ def is_new_week_or_month(current_datetime, last_sync):
         is_new_week = True
     if current_datetime.month > last_sync.month:
         is_new_month = True
-#    print('Difference in days:',(current_datetime - last_sync).days)
-#    print('Days of week:',current_datetime.weekday(), last_sync.weekday())
-#    print('Months:',current_datetime.month, last_sync.month)
-#    print(is_new_week, is_new_month)
     return is_new_week, is_new_month
 
 def read_app_input(workbook):
@@ -502,8 +521,6 @@ def read_app_input(workbook):
     for row_counter in range(1, num_rows+1):
         values = worksheet.row_values(row_counter)
         app_input_raw.append(values)
-#        print(values)
-
     # delete headers
     app_input_raw.pop(0)
 
@@ -517,8 +534,6 @@ def read_bank_data(workbook):
     for row_counter in range(1, num_rows+1):
         values = worksheet.row_values(row_counter)
         bank_data_raw.append(values)
-#        print(values)
-
     # delete headers
     bank_data_raw.pop(0)
     
@@ -532,8 +547,6 @@ def read_bank_unresolved(workbook):
     for row_counter in range(1, num_rows+1):
         values = worksheet.row_values(row_counter)
         bank_unresolved_raw.append(values)
-#        print(values)
-
     # delete headers
     bank_unresolved_raw.pop(0)
     
@@ -545,7 +558,6 @@ def read_budget_parameters(workbook):
     worksheet = workbook.worksheet(parameters_ws)
     num_cols = worksheet.col_count
     budget_parameters_cols = [[],[],[],[]]
-    # budget_parameters_income_raw, budget_parameters_expenses_raw
     # need to combine the separate columns into only 4 columns
     num_income_categories = 0
     column_combiner = 0
@@ -558,10 +570,8 @@ def read_budget_parameters(workbook):
         budget_parameters_cols[column_combiner] += values
         if col_counter == 4:
             num_income_categories = len(budget_parameters_cols[0])
-#        print(values)
         column_combiner = (column_combiner+1)%4
     
-#    budget_parameters_raw = []
     budget_parameters_income_raw = []
     budget_parameters_expenses_raw = []
     
@@ -586,7 +596,6 @@ def read_budget_balancer_input(workbook):
     for row_counter in range(1, num_rows+1):
         values = worksheet.row_values(row_counter)
         budget_balancer_input_raw.append(values)
-#        print(values)
 
     # delete headers
     budget_balancer_input_raw.pop(0)
@@ -634,19 +643,10 @@ def has_updates(app_input, bank_data, budget_balancer_input):
     '''check to see if there are any new bank entires or app entires or if it is a new week/month. Returns True/False'''
     for app_entry in app_input:
         if not app_entry.included_in_projection:
-            return True
-        
+            return True   
     if len(bank_data) or len(budget_balancer_input) > 0:
         return True
-    
     return False
-    
-#def delete_blank_rows(workbook, data):
-#    '''Deletes all blank rows starting from the bottom until it runs into data. Helps speed things up for next time.'''
-#    # note that you cannot delete all unfrozen rows
-#    workbook.worksheet()
-#    # We want exactly one blank row left on raw bank acount data
-#    pass
 
 def create_new_month(workbook, current_datetime, last_sync, budget_parameters):
     '''makes a new worksheet titled [month year]. This is only called at the start of a month. Also fills in the category headers'''
@@ -666,7 +666,6 @@ def create_new_month(workbook, current_datetime, last_sync, budget_parameters):
         if not current_ws_name in worksheet_names:
             worksheet = workbook.add_worksheet(current_ws_name, 3, 6 + num_categories)
             worksheet_names.append(current_ws_name)
-#            print("worksheet created. Now adding values.")
             worksheet.update_cell(1,2,"Monthly Net Change:")
             worksheet.update_cell(1,4,"Running Net Change:")
             worksheet.update_cell(2,1,"Date")
@@ -755,10 +754,6 @@ def find_bottom_row(worksheet):
         else:
             break
     return current_row
-
-#def add_first_data_row(worksheet, values, row=3):
-#    '''adds an entire new row of data at row 3 (by default), since all new months start there'''
-#    worksheet.insert_row(values,index=row)
     
 def get_row_from_date(worksheet, date):
     '''return the row of the first instance of a date that is less than or equal to the given date'''
@@ -860,17 +855,7 @@ def propagate_addition_ws(worksheet, init_row):
             cell.value = str(new_value)
             column_counter+=1
         worksheet.update_cells(cells_to_update)
-        previous_values = worksheet.row_values(row_counter)
-
-## Select a range
-#cell_list = worksheet.range('A1:C7')
-#cell_list = worksheet.range(1, 1, 7, 2)
-#
-#for cell in cell_list:
-#    cell.value = 'O_o'
-#
-## Update in batch
-#worksheet.update_cells(cell_list)        
+        previous_values = worksheet.row_values(row_counter)  
         
 
 ##############################################################################
@@ -1062,11 +1047,7 @@ def assign_categories(app_input, bank_data):
     # attempt exact matches
     for bank_entry in bank_data:
         for app_entry in app_input:
-#            print('\nAttempting match:')
-#            print(bank_entry.original_values)
-#            print(app_entry.original_values)
              bank_entry.attempt_match_exact(app_entry)
-#            print('Matching Success?',is_matched)
     # attempt approximate matches
     for bank_entry in bank_data:
         for app_entry in app_input:
@@ -1153,7 +1134,9 @@ def update_feedback_page(workbook, current_datetime, total_unresolved, output_di
     # assign values to cell list
     cell_list = worksheet.range(6, 1, num_rows, 4)
     cell_counter = 0
-    for category in output_dictionary:
+    categories = list(output_dictionary.keys())
+    categories.sort()
+    for category in categories:
         values =  output_dictionary[category]
         
         cell_list[cell_counter].value = category
@@ -1192,28 +1175,15 @@ def update_feedback_page(workbook, current_datetime, total_unresolved, output_di
 #    workbook.worksheet('test sheet').update_cells(cell_list)   
 
 def balance_budget():
-    '''manages input form the budget balancer form. Allows you to modify budget parameters permenently, retroacticely, or just one-time. Also allows you to do one-time transfers between expense categories. Also delete the rows of the form entries that are used'''
+    '''manages input from the budget balancer form. Allows you to modify budget parameters permenently, retroacticely, or just one-time. Also allows you to do one-time transfers between expense categories. Also delete the rows of the form entries that are used'''
     pass
 
-
-# call driving function
-#try:
-main()
-#main(fake_date=datetime(year=2017,month=9,day=5))
-#except:
-#    # print the error message onto the feedback page
-#    pass
-
-
-
-
-
-
-# TODO make a function that uses the budget balancer requests to modify parameters and retroactively change allotments
-
-# TODO: send a reminder/update text at the beginning of the month (or week) with:
-#   how we are doing on categories, 
-#   if we need to do some money transfers, 
-#   remind us to input the latest bank record (if it has been too long)
-#   and how many outstanding items need to be categorized
+if run_online:
+    try:
+        main()
+    except:
+        pass
+else:
+    main()
+#    main(fake_date=datetime(year=2017,month=9,day=5))
 
