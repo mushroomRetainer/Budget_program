@@ -1,60 +1,16 @@
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, timedelta
-import itertools
-from collections import Counter # needed for complex merging to preserve duplicates in individual lists, but not in both
-import os
-
-################################
-########### Example ############
-################################
-
-#worksheet = workbook.worksheet("New Input From App")
-# 
-## Extract and print all of the values
-# num_rows = worksheet.row_count
-# for row_counter in range(1, num_rows+1):
-#    values = worksheet.row_values(row_counter)
-#    print(values)
 
 
-
-# adjustable parameters
-run_online = False
-
-Month_names = ['month0','Jan','Feb','March','April','May','June','July','Aug','Sept','Oct','Nov','Dec']
-feedpage_ws = 'Current Budget'
-expense_input_ws = 'Input From Expense Log'
-balancer_input_ws = 'Input From Budget Balancer'
-parameters_ws = 'Budget Parameters'
-budget_balancer_ws = 'Input From Budget Balancer'
-auto_transactions_ws = 'Automatic transactions'
-raw_bank_data_ws = 'raw bank acount data'
-unresolved_items_ws = 'unresolved bank items'
-datetime_format = '%m/%d/%Y %H:%M:%S'
-date_format = '%m/%d/%Y' # hopefully the same as BECU to cut down on formatting
-last_month_copy_description = 'Copy from End of Last Month'
-date_match_tolerance = timedelta(days=3)
-earliest_tracking_date = datetime(year=2017,month=10,day=1).date() # anything before this will be 
-# other sheets are created and named dynamically based on month/year
+# local imports
+from params import *
+from input_methods import *
+from utillity import *
+from supporting_classes import *
 
 
 
 ################################
 ########### Methods ############
 ################################
-
-#def test_read_matrix(workbook):
-#    ## Select a range
-#    #cell_list = worksheet.range('A1:C7')
-#    cell_list = workbook.worksheet('test sheet').range(2, 2, 6, 6)
-#    counter = 101
-#    for cell in cell_list:
-#        print(cell.value)
-#        cell.value = counter
-#        counter+=1
-#    # Update in batch
-#    workbook.worksheet('test sheet').update_cells(cell_list)   
 
 def main(fake_date=None):
     '''driving function''' 
@@ -99,7 +55,12 @@ def main(fake_date=None):
     
     # these variables are lists of objects from the classes
     print('Cleaning Up and Organizing Raw Input')
-    app_input, bank_data, bank_unresolved, budget_parameters, budget_balancer_input = clean_input_up(app_input_raw, bank_data_raw, bank_unresolved_raw, budget_parameters_income_raw, budget_parameters_expenses_raw, budget_balancer_input_raw)
+    app_input, bank_data, bank_unresolved, budget_parameters, budget_balancer_input = clean_input_up(app_input_raw, 
+                                                                                                     bank_data_raw, 
+                                                                                                     bank_unresolved_raw, 
+                                                                                                     budget_parameters_income_raw, 
+                                                                                                     budget_parameters_expenses_raw, 
+                                                                                                     budget_balancer_input_raw)
     bank_data = delete_old_bank_data(bank_data) 
     bank_data = remove_duplicate_bank_entries(workbook, bank_data)
     bank_data = merge_bank_data_and_unresolved(bank_data, bank_unresolved)
@@ -132,6 +93,9 @@ def main(fake_date=None):
     first_modified_date, unmatched_app_entries, total_unresolved = move_and_delete_matches(workbook, app_input, bank_data, current_datetime)
     earliest_modified_date = min(earliest_modified_date, first_modified_date)
     print('Earliest Modified Date:',earliest_modified_date)
+    
+    print('Balancing Budget')
+    balance_budget(workbook, budget_balancer_input, current_datetime)
     print('Propagating Addition')
     propagate_addition(workbook, earliest_modified_date)
     print('Finding Net Changes')
@@ -140,346 +104,15 @@ def main(fake_date=None):
     print('Updating Feedback Page')
     output_dictionary = get_update_page_info(workbook, budget_parameters, unmatched_app_entries, current_datetime)
     update_feedback_page(workbook, current_datetime, total_unresolved, output_dictionary, most_recent_net, projected_net)
-    print('Balancing Budget')
-    balance_budget()
+    
     
 #    if is_new_week:
 #        clean_up_form_entries() # this needs to happen after the category assignments in case you assigned a very retroactive one
 #        possily send a text reminder here too
         
-    
     print('Complete')
 
-class App_entry:
-    ## order of the entries in "values":
-    #0 Timestamp	
-    #1 Who made the transaction?	
-    #2 Category	
-    #3 Date (today is assumed if left blank)	
-    #4 Income Sub-category	
-    #5 Donations & Savings Sub-category	
-    #6 Bills Sub-category	
-    #7 Daily Living Sub-category	
-    #8 Brief Description (if necessary)	
-    #9 Check if This is a Refund Applied to an Expense Category
-    #10 Enter Amount of Transaction	
-    #11 Check if This is Combined With Another Expense On the Same Date	
-    #12 Included in projection?
-    
-    # class attributes:
-    # self.row
-    # self.date
-    # self.who
-    # self.category
-    # self.description
-    # self.is_refund
-    # self.amount
-    # self.is_combined
-    # self.included_in_projection
-    
-    # self.is_matched
-    # self.original_values
-    
-    def __init__(self, row, values):
-        self.row = row # keep in mind this is the spreadsheet row, so it is 1-indexed
-        self.original_values = values
-        
-        if values[3] != '':
-            self.date = datetime.strptime(values[3], date_format).date()
-        elif values[0] != '':
-            self.date = datetime.strptime(values[0], datetime_format).date()
-        
-        self.who = values[1]
-        
-        # get the category using one of the four "subcategories"
-        if values[2] == 'Income':
-            self.category = values[4]
-        
-        elif values[2] == 'Donations & Savings':
-            self.category = values[5]
-        
-        elif values[2] == 'Bills':
-            self.category = values[6]
-        
-        elif values[2] == 'Daily Living':
-            self.category = values[7]
-            
-        else:
-            self.category = '' # not sure why it would get to this poit, but just in case we'll set a empty value
-        
-        self.description = values[8]
-        self.is_refund = (values[9] != '')
-        
-        # determine positive or negtative sign for the amount (only negative if expense that isn't a refund):
-        if values[2] == 'Income' or self.is_refund:
-            self.amount = abs(float(values[10]))
-        else:
-            self.amount =  -1 * abs(float(values[10]))
-        
-        self.is_combined = (values[11] != '')
-        self.included_in_projection = (values[12] != '')
-        
-        self.is_matched = False
-        
-    # comparison methods (so a list can be sorted by date)
-    def __lt__(self, other):
-        return self.date < other.date
-    def __le__(self, other):
-        return self.date <= other.date
-    def __eq__(self, other):
-        return self.date == other.date
-    def __ne__(self, other):
-        return self.date != other.date
-    def __gt__(self, other):
-        return self.date > other.date
-    def __ge__(self, other):
-        return self.date >= other.date
 
-class Bank_entry:
-    #0 date
-    #1 check number
-    #2 bank description
-    #3 negative
-    #4 positive
-    
-    ## class attributes:
-    # self.row
-    # self.date
-    # self.check_number
-    # self.description
-    # self.amount
-    
-    # self.is_matched
-    # self.category
-    # self.app_description
-    # self.original_values
-    
-    # TODO: implement these:
-    # self.is_combined
-    # self.categories
-    # self.amounts
-    
-    def __init__(self, row, values):
-        self.row = row
-        self.original_values = values
-        self.date = datetime.strptime(values[0], date_format).date()
-        self.check_number = values[1]
-        self.description = values[2]
-        
-        if values[4] != '':
-            # income (positive value)
-            self.amount = abs(float(values[4]))
-        elif values[3] != '':
-            # expense (negative value)
-            self.amount = -1 * abs(float(values[3]))
-        else:
-            self.amount=0 # not sure why it would ever get here
-        
-        self.is_matched = False
-        self.category = None
-        self.app_description = None
-            
-    def attempt_match_exact(self, app_entry):
-#        print('Exact Match attempt:', self.date, '==', app_entry.date, 'and', self.amount, '==', app_entry.amount)
-        if self.is_matched or app_entry.is_matched or app_entry.is_combined:
-            return False
-        elif self.date == app_entry.date and self.amount == app_entry.amount:
-            self.category = app_entry.category
-            self.is_matched = True
-            self.app_description = app_entry.who + ": " + app_entry.description
-            app_entry.is_matched = True
-            return True
-        else:
-            return False
-    
-    def attempt_match_approximate(self, app_entry):
-        if self.is_matched or app_entry.is_matched or app_entry.is_combined:
-            return False
-        elif abs(self.date - app_entry.date) <= date_match_tolerance and self.amount == app_entry.amount:
-            self.category = app_entry.category
-            self.is_matched = True
-            self.app_description = app_entry.who + ": " + app_entry.description
-            app_entry.is_matched = True
-            return True
-        else:
-            return False
-    
-    def attempt_match_combined_exact(self, app_entry_list):
-        if self.is_matched:
-            return False
-        #get subset of app_entry list that are combined and have the exact date
-        app_entry_list_combined = []
-        for app_entry in app_entry_list:
-            if app_entry.is_combined and self.date == app_entry.date:
-                app_entry_list_combined.append(app_entry)
-        if len(app_entry_list_combined) == 0:
-            return False
-        # try all possible combinations and see if one works
-        # it is called a powerset when you get all combinations of all lengths
-        # https://stackoverflow.com/questions/464864/how-to-get-all-possible-combinations-of-a-list-s-elements
-        for L in range(0, len(app_entry_list_combined)+1):
-            for subset in itertools.combinations(app_entry_list_combined, L):
-                # get sum of subset
-                amount_sum = 0
-                for app_entry in subset:
-                    amount_sum += app_entry.amount
-                # if sum is equal, then set matched variables to true and break out of both loops with a return
-                if amount_sum == self.amount:
-                    self.category = app_entry.category # TODO: This only records the category as the last entry's category! 
-                    self.is_matched = True
-                    self.app_description = ''
-                    for app_entry in subset:
-                        self.app_description += app_entry.who + ": " + app_entry.description + '. '
-                        app_entry.is_matched = True
-                    return True
-        return False
-    
-    def attempt_match_combined_approximate(self, app_entry_list):
-        if self.is_matched:
-            return False
-        #get subset of app_entry list that are combined and have the exact date
-        app_entry_list_combined = []
-        for app_entry in app_entry_list:
-            if app_entry.is_combined and abs(self.date - app_entry.date) <= date_match_tolerance:
-                app_entry_list_combined.append(app_entry)
-        if len(app_entry_list_combined) == 0:
-            return False
-        # try all possible combinations and see if one works
-        # it is called a powerset when you get all combinations of all lengths
-        # https://stackoverflow.com/questions/464864/how-to-get-all-possible-combinations-of-a-list-s-elements
-        for L in range(0, len(app_entry_list_combined)+1):
-            for subset in itertools.combinations(app_entry_list_combined, L):
-                # get sum of subset
-                amount_sum = 0
-                for app_entry in subset:
-                    amount_sum += app_entry.amount
-                # if sum is equal, then set matched variables to true and break out of both loops with a return
-                if amount_sum == self.amount:
-                    self.category = app_entry.category
-                    self.is_matched = True
-                    self.app_description = ''
-                    for app_entry in subset:
-                        self.app_description += app_entry.who + ": " + app_entry.description + '. '
-                        app_entry.is_matched = True
-                    return True
-        return False
-    
-    # comparison methods (so a list can be sorted by date)
-    def __lt__(self, other):
-        return self.date < other.date
-    def __le__(self, other):
-        return self.date <= other.date
-    def __eq__(self, other):
-        return self.date == other.date
-    def __ne__(self, other):
-        return self.date != other.date
-    def __gt__(self, other):
-        return self.date > other.date
-    def __ge__(self, other):
-        return self.date >= other.date
-    def __hash__(self):
-        hash_str = ''
-        for i in self.original_values:
-            hash_str+=i
-        return hash(hash_str)
-    
-    
-class Budget_parameters:
-    
-    # this is for the layered dictionary: 
-            # first give 'Income' or 'Expenses'
-            # third give the category
-            # you will get the value back as a float
-    
-    # class attributes:
-    # self.data_layered_dictionary (see above note)
-    # self.data_dictionary
-    # self.all_categories
-    # self.all_income_categories
-    # self.all_expense_categories
-    # self.num_categories
-    
-    def __init__(self, budget_parameters_income_raw, budget_parameters_expenses_raw):
-        self.data_layered_dictionary = {'Income':{ 'monthly':{},'weekly':{} }, 'Expenses':{ 'monthly':{},'weekly':{} } }
-        self.data_dictionary = {}
-        self.all_categories = []
-        self.all_income_categories = []
-        self.all_expense_categories = []
-        
-        for row in budget_parameters_income_raw:
-            category, frequency, amount, notes = row
-            amount = abs(float(amount))
-            self.data_layered_dictionary['Income'][frequency][category]= amount
-            self.data_dictionary[category] = amount
-            self.all_categories.append(category)
-            self.all_income_categories.append(category)
-                
-        for row in budget_parameters_expenses_raw:
-            category, frequency, amount, notes = row
-            self.data_layered_dictionary['Expenses'][frequency][category] = abs(float(amount))
-            self.all_categories.append(category)
-            self.all_expense_categories.append(category)
-            
-        self.num_categories = len(budget_parameters_income_raw) + len(budget_parameters_expenses_raw)   
-    
-    def get_projected_net(self):
-        weekly_to_monthly = 365.25/7/12 # ew!
-        weekly = sum(self.data_layered_dictionary['Income']['weekly'].values()) - sum(self.data_layered_dictionary['Expenses']['weekly'].values())
-        monthly = sum(self.data_layered_dictionary['Income']['monthly'].values()) - sum(self.data_layered_dictionary['Expenses']['monthly'].values())
-        projected_net_monthly = monthly + weekly*weekly_to_monthly
-        projected_net_weekly = monthly/weekly_to_monthly + weekly
-        return [round(projected_net_monthly,2), round(projected_net_weekly,2)] # nearest cent
-        
-
-class Budget_balancer_entry:
-    #0 Timestamp	
-    #1 What do you want to do?	
-    #2 Category to Decrease	
-    #3 Category to Increase	
-    #4 Amount to Transfer	
-    #5 Additional Notes
-    #6 Category to Modify	
-    #7 Is this an increase or a decrease?	
-    #8 Should this affect the current month/week?	
-    #9 Should this be one-time or permanent?	
-    #10 Amount
-    #11 Additional Notes
-    
-    ## class attributes:
-    # self.row
-    # self.date
-    # self.is_transfer (otherwise it is an adjustment)
-    # self.category
-    # self.category_2
-    # self.amount
-    # self.amount_2
-    # self.notes
-    # self.affect_current
-    # self.is_permanent
-    
-    def __init__(self, row, values):
-        self.row = row
-        self.date = datetime.strptime(values[0], datetime_format)
-        if values[1] == 'Transfer Money':
-            self.is_transfer = True
-            self.category = values[2]
-            self.category_2 = values[3]
-            self.amount = -1 * abs(float(values[4]))
-            self.amount_2 = abs(float(values[4]))
-            self.notes = values[5]
-            
-        elif values[1] == 'Adjust Weekly/Monthly Allotmentsy':
-            self.is_transfer = False
-            self.category = values[6]
-            if values[7] == 'Decrease':
-                self.amount = -1 * abs(float(values[10]))
-            else:
-                self.amount = abs(float(values[10]))
-            self.affect_current = (values[8] == 'Yes')
-            self.is_permanent = (values[9] == 'Permanent')
-            self.notes = values[11]
-        else:
-            pass # note sure how it would get here
 
 def get_workbook():
     # use creds to create a client to interact with the Google Drive API
@@ -496,12 +129,7 @@ def get_workbook():
         workbook = client.open("Test Budget")
     return workbook
 
-def read_last_sync(workbook):
-    '''reads in the date and time the shreadsheet was most recently synconized'''
-    worksheet = workbook.worksheet(feedpage_ws)
-    last_sync_string = worksheet.cell(1,2).value
-    last_sync = datetime.strptime(last_sync_string, datetime_format)
-    return last_sync
+
 
 def is_new_week_or_month(current_datetime, last_sync):
     '''checks to see if a new week or month has started based on the current date/time and the last sync time. Returns two booleans'''
@@ -513,94 +141,7 @@ def is_new_week_or_month(current_datetime, last_sync):
         is_new_month = True
     return is_new_week, is_new_month
 
-def read_app_input(workbook):
-    '''read in all the current app input'''
-    worksheet = workbook.worksheet(expense_input_ws)
-    num_rows = worksheet.row_count
-    app_input_raw = []
-    for row_counter in range(1, num_rows+1):
-        values = worksheet.row_values(row_counter)
-        app_input_raw.append(values)
-    # delete headers
-    app_input_raw.pop(0)
 
-    return app_input_raw
-
-def read_bank_data(workbook):
-    '''read in all the current bank data'''
-    worksheet = workbook.worksheet(raw_bank_data_ws)
-    num_rows = worksheet.row_count
-    bank_data_raw = []
-    for row_counter in range(1, num_rows+1):
-        values = worksheet.row_values(row_counter)
-        bank_data_raw.append(values)
-    # delete headers
-    bank_data_raw.pop(0)
-    
-    return bank_data_raw
-
-def read_bank_unresolved(workbook):
-    '''read in all the current bank data'''
-    worksheet = workbook.worksheet(unresolved_items_ws)
-    num_rows = worksheet.row_count
-    bank_unresolved_raw = []
-    for row_counter in range(1, num_rows+1):
-        values = worksheet.row_values(row_counter)
-        bank_unresolved_raw.append(values)
-    # delete headers
-    bank_unresolved_raw.pop(0)
-    
-    return bank_unresolved_raw
-
-
-def read_budget_parameters(workbook):
-    '''read in all budget parameters'''
-    worksheet = workbook.worksheet(parameters_ws)
-    num_cols = worksheet.col_count
-    budget_parameters_cols = [[],[],[],[]]
-    # need to combine the separate columns into only 4 columns
-    num_income_categories = 0
-    column_combiner = 0
-    for col_counter in range(4, num_cols+1):
-        values = worksheet.col_values(col_counter)
-        
-        # delete headers
-        values.pop(0)
-        
-        budget_parameters_cols[column_combiner] += values
-        if col_counter == 4:
-            num_income_categories = len(budget_parameters_cols[0])
-        column_combiner = (column_combiner+1)%4
-    
-    budget_parameters_income_raw = []
-    budget_parameters_expenses_raw = []
-    
-    num_rows = len(budget_parameters_cols[0])
-    for parameter_index in range(num_rows):
-        row = [budget_parameters_cols[0][parameter_index],budget_parameters_cols[1][parameter_index],budget_parameters_cols[2][parameter_index],budget_parameters_cols[3][parameter_index]]
-        row_is_empty = True
-        for element in row:
-            row_is_empty = row_is_empty & (element=='')
-        if not row_is_empty:
-            if parameter_index < num_income_categories:
-                budget_parameters_income_raw.append(row)
-            else:
-                budget_parameters_expenses_raw.append(row)
-    return budget_parameters_income_raw, budget_parameters_expenses_raw
-
-def read_budget_balancer_input(workbook):
-    '''read in all budget balancer input'''
-    worksheet = workbook.worksheet(budget_balancer_ws)
-    num_rows = worksheet.row_count
-    budget_balancer_input_raw = []
-    for row_counter in range(1, num_rows+1):
-        values = worksheet.row_values(row_counter)
-        budget_balancer_input_raw.append(values)
-
-    # delete headers
-    budget_balancer_input_raw.pop(0)
-    
-    return budget_balancer_input_raw
 
 def clean_input_up(app_input_raw, bank_data_raw, bank_unresolved_raw, budget_parameters_income_raw, budget_parameters_expenses_raw, budget_balancer_input_raw):
     '''cleans the input so there no funny business that happens due to a bad input value. Uses the custom classes at the top to better organize things.'''
@@ -734,76 +275,6 @@ def copy_end_of_month_values(previous_ws, current_ws, beginning_of_month):
     
     current_ws.insert_row(beginning_of_month_values, index=3)
 
-def get_all_ws_names(workbook):
-    all_worksheets = workbook.worksheets()
-    worksheet_names = []
-    for worksheet in all_worksheets:
-        worksheet_names.append(worksheet.title)
-    return worksheet_names
-            
-def find_bottom_row(worksheet):
-    '''finds the row closest to the bottom of the worksheet that has a non-empty cell'''
-    current_row = worksheet.row_count
-    while current_row>0:
-        empty_row = True
-        row_values = worksheet.row_values(current_row)
-        for value in row_values:
-            empty_row = empty_row & (value == '')
-        if empty_row:
-            current_row-=1
-        else:
-            break
-    return current_row
-    
-def get_row_from_date(worksheet, date):
-    '''return the row of the first instance of a date that is less than or equal to the given date'''
-    # in case a date was passed instead of a datetime:
-    date = datetime(date.year, date.month, date.day)
-    row_counter = 3
-    num_rows = find_bottom_row(worksheet)
-    
-    # find the appropriate row to insert the line:
-    while row_counter <= num_rows:
-        current_date_str = worksheet.cell(row_counter, 1).value
-        if date <= datetime.strptime(current_date_str, date_format):
-            break
-        row_counter += 1
-    return row_counter
-    
-def add_budget_line_item(worksheet, date, check_number, bank_description, app_discription, amount, category):
-    '''adds a budget item to the given worksheet. Determines where to add it based on the date. 
-    Assumes there is an existing line of data. Adds it AFTER items with the same date'''
-    # just in case date is not a datetime:
-    date = datetime(year=date.year,month=date.month,day=date.day)
-    
-    row_counter = 3
-    num_rows = worksheet.row_count
-    # find the appropriate row to insert the line:
-    while row_counter <= num_rows:
-        current_date_str = worksheet.cell(row_counter, 1).value
-        if current_date_str == '':
-            break
-        if date < datetime.strptime(current_date_str, date_format):
-            break
-        row_counter += 1
-    # copy values from the above row
-    values = []
-    values.append(date.strftime(date_format))
-    values.append(check_number)
-    values.append(bank_description)
-    values.append(app_discription)
-    values.append(amount)
-    values.append(category)
-    worksheet.insert_row(values,index=row_counter)
-
-def get_column_number(worksheet, category):
-    '''returns the column number for a given category in a given worksheet'''
-    row_values = worksheet.row_values(2)
-    if category in row_values:
-        return row_values.index(category) + 1 #convert from zero- to one-
-    else:
-        return None
-
 def propagate_addition(workbook, init_date):
     '''starts from the given date and does all the addition from scratch to avoid errors'''
     
@@ -921,15 +392,7 @@ def monthly_refill(worksheet, first_date_of_month, budget_parameters):
     partial_weekly_refill(worksheet, first_date_of_month, days_in_week, budget_parameters)
     
 
-def get_current_month_ws(workbook, date):
-    
-    worksheet_names = get_all_ws_names(workbook)
-    
-    current_ws_name = Month_names[date.month] + ' ' + str(date.year)
-    if current_ws_name in worksheet_names:
-        return workbook.worksheet(current_ws_name)
-    else:
-        return None
+
 
 def move_and_delete_matches(workbook, app_input, bank_data, current_datetime):
     '''takes the matched bank entries and app entries, then inserts bank entries into the appropriate worksheets 
@@ -972,6 +435,13 @@ def move_and_delete_matches(workbook, app_input, bank_data, current_datetime):
     num_rows = worksheet_bank_unresolved.row_count
     for row in range(2,num_rows+1):
         worksheet_bank_unresolved.delete_row(2)
+        
+    #delete all budget app items
+    worksheet_budget_balancer = workbook.worksheet(budget_balancer_ws)
+    num_rows = worksheet_budget_balancer.row_count
+    worksheet_budget_balancer.add_rows(1) # add an extra blank row so there is still one left
+    for row in range(2,num_rows+1):
+        worksheet_budget_balancer.delete_row(2)
     
     # input all bank_entries that are unmatched and matched into appropriate sheets
     for bank_entry in bank_data:
@@ -1162,21 +632,15 @@ def update_feedback_page(workbook, current_datetime, total_unresolved, output_di
     # update expense categories
     worksheet.update_cells(cell_list)  
 
-#def test_read_matrix(workbook):
-#    ## Select a range
-#    #cell_list = worksheet.range('A1:C7')
-#    cell_list = workbook.worksheet('test sheet').range(2, 2, 6, 6)
-#    counter = 101
-#    for cell in cell_list:
-#        print(cell.value)
-#        cell.value = counter
-#        counter+=1
-#    # Update in batch
-#    workbook.worksheet('test sheet').update_cells(cell_list)   
-
-def balance_budget():
+def balance_budget(workbook, budget_balancer_input, current_datetime):
     '''manages input from the budget balancer form. Allows you to modify budget parameters permenently, retroacticely, or just one-time. Also allows you to do one-time transfers between expense categories. Also delete the rows of the form entries that are used'''
-    pass
+    worksheet = get_current_month_ws(workbook, current_datetime)
+    for item in budget_balancer_input:
+        if item.is_transfer:
+            add_budget_line_item(worksheet, current_datetime, '', 'Budget Balancer Decrease', item.notes, item.amount, item.category)
+            add_budget_line_item(worksheet, current_datetime, '', 'Budget Balancer Increase', item.notes, item.amount_2, item.category_2)
+        else: # for permanent budget category adjustments
+            pass # TODO: need to write this!
 
 if run_online:
     try:
