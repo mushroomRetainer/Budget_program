@@ -31,11 +31,14 @@ def main(fake_date=None):
     #   and how many outstanding items need to be categorized
     # TODO: add a log page that outputs what was done at each update (number of items matched, new month/week created, etc.)
     # rather than one long list. This will make switching out slow reading and writing faster 
+    # TODO: make a separate 'trouble shooting scripts file'; add the existing full propogation method; make a new method that takes a csv and does a hard check for duplicates as well as too many of each auto-generated entry as well as dates out of order
+    # TODO: read the month of entries in as a batch when comparing for duplicates. Perhaps just have a class that stores all these values?
+    # TODO: lots of the output needs to be sorted by date or alphbetically: unresolved input page, monthly/weekly refills
+    # TODO: fix the part of the addition propogation that seems to add a second 'copy of end of last month' row. It happens particularily with the full propogation on November, but not October for some reason
+    # TODO: paste the unresolved entires in as a batch rather than one at a time
+    
     print('Getting Workbook')
     workbook = get_workbook()
-    
-#    print('testing mass read/write')
-#    test_read_matrix(workbook)
     
     # init, every time
     
@@ -112,7 +115,11 @@ def main(fake_date=None):
         
     print('Complete')
 
-
+def full_propogation():
+    print('Getting Workbook')
+    workbook = get_workbook()
+    print('Doing a full propogation of addition')
+    propagate_addition(workbook, datetime(year=2017,month=10,day=1))
 
 def get_workbook():
     # use creds to create a client to interact with the Google Drive API
@@ -417,7 +424,7 @@ def move_and_delete_matches(workbook, app_input, bank_data, current_datetime):
     rows_to_delete = sorted(rows_to_delete,reverse=True) # by deleting them in reverse order, we won't have any problems with the rows shifting
     
     # can't delete all unfrozen rows in worksheet, so add a fresh row if needed
-    if len(rows_to_delete) == worksheet_app_entries.row_count +1:
+    if len(rows_to_delete) == worksheet_app_entries.row_count -1:
         worksheet_app_entries.add_rows(1)
         
     for row in rows_to_delete:
@@ -442,8 +449,11 @@ def move_and_delete_matches(workbook, app_input, bank_data, current_datetime):
     worksheet_budget_balancer.add_rows(1) # add an extra blank row so there is still one left
     for row in range(2,num_rows+1):
         worksheet_budget_balancer.delete_row(2)
+      
+    # input all bank_entries that are unmatched and matched into appropriate sheets    
     
-    # input all bank_entries that are unmatched and matched into appropriate sheets
+    bank_data.sort()
+
     for bank_entry in bank_data:
         if not bank_entry.is_matched:
             values = bank_entry.original_values
@@ -483,7 +493,7 @@ def remove_duplicate_bank_entries(workbook, bank_data):
         if row <= num_rows:
             compare_date = datetime.strptime(worksheet.cell(row,1).value, date_format).date()
             while bank_entry.date == compare_date:
-                if bank_entry.description == worksheet.cell(row,3).value and str(bank_entry.amount) == worksheet.cell(row,5).value:
+                if bank_entry.description == worksheet.cell(row,3).value and bank_entry.amount == float(worksheet.cell(row,5).value): # need to compare amounts as floats, otherwise having/not having a decimal can throw things off if you compare strings
                     ID = [worksheet.title,row]
                     if ID not in entires_matched:
                         duplicate = True
@@ -642,11 +652,14 @@ def balance_budget(workbook, budget_balancer_input, current_datetime):
         else: # for permanent budget category adjustments
             pass # TODO: need to write this!
 
+# use this to redo all the addition from 10-1-17 and on
+#full_propogation()
+
 if run_online:
     try:
         main()
     except:
-        pass
+        print('Program crashed :(')
 else:
     main()
 #    main(fake_date=datetime(year=2017,month=9,day=5))
