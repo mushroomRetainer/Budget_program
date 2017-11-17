@@ -72,6 +72,9 @@ def main(fake_date=None):
     
     print('Checking for Updates')
     if not (has_updates(app_input, bank_data, budget_balancer_input) or is_new_week or is_new_month):
+        print('There are no updates, so the program will now update the sync time and end')
+        update_synctime(workbook.worksheet(feedpage_ws), current_datetime)
+        print('Complete')
         return #if there are not updates
     
     earliest_modified_date = current_datetime
@@ -631,9 +634,7 @@ def update_feedback_page(workbook, current_datetime, total_unresolved, output_di
         cell_list[cell_counter].value = str(values[2])
         cell_counter += 1
     
-    # update sync time
-    print('New Sync Time is:',current_datetime.strftime(datetime_format))
-    worksheet.update_cell(1,2,current_datetime.strftime(datetime_format))
+    update_synctime(worksheet, current_datetime)
     # update net values
     worksheet.update_cell(2,2,str(most_recent_net))
     
@@ -641,6 +642,11 @@ def update_feedback_page(workbook, current_datetime, total_unresolved, output_di
     worksheet.update_cell(3,4,str(projected_net[1]))
     # update expense categories
     worksheet.update_cells(cell_list)  
+    
+def update_synctime(worksheet, current_datetime):
+    # update sync time
+    print('New Sync Time is:',current_datetime.strftime(datetime_format))
+    worksheet.update_cell(1,2,current_datetime.strftime(datetime_format))
 
 def balance_budget(workbook, budget_balancer_input, current_datetime):
     '''manages input from the budget balancer form. Allows you to modify budget parameters permenently, retroacticely, or just one-time. Also allows you to do one-time transfers between expense categories. Also delete the rows of the form entries that are used'''
