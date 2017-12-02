@@ -296,6 +296,9 @@ def propagate_addition(workbook, init_date):
     # handle subsequent worksheets
     month_counter = init_date.month + 1
     year_counter = init_date.year
+    if month_counter > 12:
+        month_counter-=12
+        year_counter+=1
     date_counter = datetime(year_counter, month_counter, 1) # the first day of next month
     previous_ws = worksheet
     worksheet = get_current_month_ws(workbook, date_counter)
