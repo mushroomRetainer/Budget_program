@@ -515,7 +515,8 @@ def move_and_delete_matches(workbook, app_input, bank_data, current_datetime, pa
                                          bank_entry.description, 
                                          bank_entry.app_description, 
                                          bank_entry.amount, 
-                                         bank_entry.category)
+                                         bank_entry.category, 
+                                         params)
             # convert date to datetime
             bank_date = datetime(year=bank_entry.date.year, month=bank_entry.date.month, day=bank_entry.date.day)
             first_modified_date = min(first_modified_date, bank_date)
