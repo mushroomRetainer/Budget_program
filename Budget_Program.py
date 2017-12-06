@@ -1,10 +1,17 @@
 
+# python imports
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime, timedelta
+import itertools
+from collections import Counter # needed for complex merging to preserve duplicates in individual lists, but not in both
+import os
 
 # local imports
-from params import *
-from input_methods import *
-from utillity import *
-from supporting_classes import *
+from params import Params
+from input_methods import Import_methods
+from utillity import Utility
+from supporting_classes import App_entry, Bank_entry, Budget_parameters, Budget_balancer_entry
 
 
 
@@ -12,7 +19,7 @@ from supporting_classes import *
 ########### Methods ############
 ################################
 
-def main(fake_date=None):
+def main(params, fake_date=None):
     '''driving function''' 
     # done: move the json file into a different folder on the pi and on my other computers so it isn't put on the github (might need to delete and recreate the github setup)
     # done: create an offline budget sheet to play with and add an optional parameter to use that sheet for testing new features
@@ -31,10 +38,10 @@ def main(fake_date=None):
     #   and how many outstanding items need to be categorized
     # TODO: add a log page that outputs what was done at each update (number of items matched, new month/week created, etc.)
     # rather than one long list. This will make switching out slow reading and writing faster 
-    # TODO: make a separate 'trouble shooting scripts file'; add the existing full propogation method; make a new method that takes a csv and does a hard check for duplicates as well as too many of each auto-generated entry as well as dates out of order
+    # TODO: make a separate 'trouble shooting scripts file'; add the existing full propagation method; make a new method that takes a csv and does a hard check for duplicates as well as too many of each auto-generated entry as well as dates out of order
     # TODO: read the month of entries in as a batch when comparing for duplicates. Perhaps just have a class that stores all these values?
     # TODO: lots of the output needs to be sorted by date or alphbetically: unresolved input page, monthly/weekly refills
-    # TODO: fix the part of the addition propogation that seems to add a second 'copy of end of last month' row. It happens particularily with the full propogation on November, but not October for some reason
+    # TODO: fix the part of the addition propagation that seems to add a second 'copy of end of last month' row. It happens particularily with the full propagation on November, but not October for some reason
     # TODO: paste the unresolved entires in as a batch rather than one at a time
     
     print('Getting Workbook')
@@ -48,24 +55,27 @@ def main(fake_date=None):
         current_datetime = fake_date
         
     print('Determining Last Sync Time')
-    last_sync = read_last_sync(workbook)
+    last_sync = Import_methods.read_last_sync(workbook, params)
     print('Reading Raw Input')
-    app_input_raw = read_app_input(workbook)
-    bank_data_raw = read_bank_data(workbook)
-    bank_unresolved_raw = read_bank_unresolved(workbook)
-    budget_parameters_income_raw, budget_parameters_expenses_raw = read_budget_parameters(workbook)
-    budget_balancer_input_raw = read_budget_balancer_input(workbook)
+    app_input_raw = Import_methods.read_app_input(workbook, params)
+    bank_data_raw = Import_methods.read_bank_data(workbook, params)
+    bank_unresolved_raw = Import_methods.read_bank_unresolved(workbook, params)
+    budget_parameters_income_raw, budget_parameters_expenses_raw = Import_methods.read_budget_parameters(workbook, params)
+    budget_balancer_input_raw = Import_methods.read_budget_balancer_input(workbook, params)
     
     # these variables are lists of objects from the classes
-    print('Cleaning Up and Organizing Raw Input')
+    print('Cleaning Up Raw Input')
     app_input, bank_data, bank_unresolved, budget_parameters, budget_balancer_input = clean_input_up(app_input_raw, 
                                                                                                      bank_data_raw, 
                                                                                                      bank_unresolved_raw, 
                                                                                                      budget_parameters_income_raw, 
                                                                                                      budget_parameters_expenses_raw, 
                                                                                                      budget_balancer_input_raw)
-    bank_data = delete_old_bank_data(bank_data) 
-    bank_data = remove_duplicate_bank_entries(workbook, bank_data)
+    print('Removing Bank Data that is too old to use')
+    bank_data = delete_old_bank_data(bank_data, params) 
+    print('Removing Duplicates from Raw Bank Data that are already known')
+    bank_data = remove_duplicate_bank_entries(workbook, bank_data, params)
+    print('Merging Raw Bank data with Unresolved Bank Data')
     bank_data = merge_bank_data_and_unresolved(bank_data, bank_unresolved)
     
     is_new_week, is_new_month = is_new_week_or_month(current_datetime, last_sync)
@@ -73,7 +83,7 @@ def main(fake_date=None):
     print('Checking for Updates')
     if not (has_updates(app_input, bank_data, budget_balancer_input) or is_new_week or is_new_month):
         print('There are no updates, so the program will now update the sync time and end')
-        update_synctime(workbook.worksheet(feedpage_ws), current_datetime)
+        update_synctime(workbook.worksheet(params.feedpage_ws), current_datetime, params)
         print('Complete')
         return #if there are not updates
     
@@ -83,46 +93,45 @@ def main(fake_date=None):
         # monthly, Call on the first day of the month if the sync value is a previous day
         # for each worksheet, delete_blank_rows() (this helps avoid excessive work when reading in values)
         print('Creating New Month')
-        first_modified_date = create_new_month(workbook, current_datetime, last_sync, budget_parameters)
+        first_modified_date = create_new_month(workbook, current_datetime, last_sync, budget_parameters, params)
         earliest_modified_date = min(earliest_modified_date, first_modified_date)
     
     if is_new_week:
         # weekly. Call on the first day of the week if the sync value is a previous day
         print('Doing Weekly Refills')
-        first_modified_date = start_new_week(workbook, current_datetime, last_sync, budget_parameters)
+        first_modified_date = start_new_week(workbook, current_datetime, last_sync, budget_parameters, params)
         earliest_modified_date = min(earliest_modified_date, first_modified_date)
     
     # every time there are updates:
     print('Assigning Categories')
     
     assign_categories(app_input, bank_data)
-    first_modified_date, unmatched_app_entries, total_unresolved = move_and_delete_matches(workbook, app_input, bank_data, current_datetime)
+    first_modified_date, unmatched_app_entries, total_unresolved = move_and_delete_matches(workbook, app_input, bank_data, current_datetime, params)
     earliest_modified_date = min(earliest_modified_date, first_modified_date)
     print('Earliest Modified Date:',earliest_modified_date)
     
     print('Balancing Budget')
-    balance_budget(workbook, budget_balancer_input, current_datetime)
+    balance_budget(workbook, budget_balancer_input, current_datetime, params)
     print('Propagating Addition')
-    propagate_addition(workbook, earliest_modified_date)
+    propagate_addition(workbook, earliest_modified_date, params)
     print('Finding Net Changes')
     most_recent_net = recalculate_monthly_net(workbook, earliest_modified_date)
     projected_net = budget_parameters.get_projected_net()
     print('Updating Feedback Page')
     output_dictionary = get_update_page_info(workbook, budget_parameters, unmatched_app_entries, current_datetime)
-    update_feedback_page(workbook, current_datetime, total_unresolved, output_dictionary, most_recent_net, projected_net)
+    update_feedback_page(workbook, current_datetime, total_unresolved, output_dictionary, most_recent_net, projected_net, params)
     
     
 #    if is_new_week:
-#        clean_up_form_entries() # this needs to happen after the category assignments in case you assigned a very retroactive one
 #        possily send a text reminder here too
         
     print('Complete')
 
-def full_propogation():
+def full_propagation(params):
     print('Getting Workbook')
     workbook = get_workbook()
-    print('Doing a full propogation of addition')
-    propagate_addition(workbook, datetime(year=2017,month=10,day=1))
+    print('Doing a full propagation of addition')
+    propagate_addition(workbook, datetime(year=2017,month=10,day=1), params)
 
 def get_workbook():
     # use creds to create a client to interact with the Google Drive API
@@ -131,7 +140,7 @@ def get_workbook():
     creds = ServiceAccountCredentials.from_json_keyfile_name(os.path.join(os.pardir, "client_secret_secure.json"), scope) # get json file from parent directory
 
     client = gspread.authorize(creds)
-    if run_online:
+    if params.run_online:
         print('Using Online Spreadsheet')
         workbook = client.open("Blackburn Budget")
     else:
@@ -154,7 +163,7 @@ def is_new_week_or_month(current_datetime, last_sync):
 
 
 def clean_input_up(app_input_raw, bank_data_raw, bank_unresolved_raw, budget_parameters_income_raw, budget_parameters_expenses_raw, budget_balancer_input_raw):
-    '''cleans the input so there no funny business that happens due to a bad input value. Uses the custom classes at the top to better organize things.'''
+    '''cleans the input so there no funny business that happens due to a bad input value. Uses the custom classes to better organize things.'''
     # return app_input, bank_data, budget_parameters, budget_balancer_input
     app_input = []
     bank_data = []
@@ -165,19 +174,19 @@ def clean_input_up(app_input_raw, bank_data_raw, bank_unresolved_raw, budget_par
     row_counter = 2 # since there is a header
     for values in app_input_raw:
         if values[0] != '': # check for blank line by looking at the first value
-            app_input.append(App_entry(row_counter, values))
+            app_input.append(App_entry(row_counter, values, params))
         row_counter +=1
         
     row_counter = 2 # since there is a header
     for values in bank_data_raw:
         if values[0] != '': # check for blank line by looking at the first value
-            bank_data.append(Bank_entry(row_counter, values))
+            bank_data.append(Bank_entry(row_counter, values, params))
         row_counter +=1
         
     row_counter = 2 # since there is a header
     for values in bank_unresolved_raw:
         if values[0] != '': # check for blank line by looking at the first value
-            bank_unresolved.append(Bank_entry(row_counter, values))
+            bank_unresolved.append(Bank_entry(row_counter, values, params))
         row_counter +=1
     
     budget_parameters = Budget_parameters(budget_parameters_income_raw, budget_parameters_expenses_raw)
@@ -199,9 +208,9 @@ def has_updates(app_input, bank_data, budget_balancer_input):
         return True
     return False
 
-def create_new_month(workbook, current_datetime, last_sync, budget_parameters):
+def create_new_month(workbook, current_datetime, last_sync, budget_parameters, params):
     '''makes a new worksheet titled [month year]. This is only called at the start of a month. Also fills in the category headers'''
-    worksheet_names = get_all_ws_names(workbook)
+    worksheet_names = Utility.get_all_ws_names(workbook)
     first_modified_date = current_datetime
     
     month_counter = last_sync.month
@@ -213,7 +222,7 @@ def create_new_month(workbook, current_datetime, last_sync, budget_parameters):
     num_categories = budget_parameters.num_categories
     
     while year_counter <= current_datetime.year and month_counter <= current_datetime.month:
-        current_ws_name = Month_names[month_counter] + ' ' + str(year_counter)
+        current_ws_name = params.Month_names[month_counter] + ' ' + str(year_counter)
         if not current_ws_name in worksheet_names:
             worksheet = workbook.add_worksheet(current_ws_name, 3, 6 + num_categories)
             worksheet_names.append(current_ws_name)
@@ -236,19 +245,19 @@ def create_new_month(workbook, current_datetime, last_sync, budget_parameters):
             if previous_month < 1:
                 previous_month += 12
                 previous_year -= 1
-            previous_ws_name = Month_names[previous_month] + ' ' + str(previous_year)
+            previous_ws_name = params.Month_names[previous_month] + ' ' + str(previous_year)
             
             beginning_of_month = datetime(year_counter, month_counter, 1)
             first_modified_date = min(beginning_of_month,first_modified_date)
             
             if previous_ws_name in worksheet_names:
                 previous_ws = workbook.worksheet(previous_ws_name)
-                copy_end_of_month_values(previous_ws, worksheet, beginning_of_month)
+                copy_end_of_month_values(previous_ws, worksheet, beginning_of_month, params)
                 
             print('Created sheet named:',current_ws_name,'and added initial values.')
             # do monthly refills
             print('Doing Monthly Refills for',current_ws_name)
-            monthly_refill(worksheet, beginning_of_month, budget_parameters)
+            monthly_refill(worksheet, beginning_of_month, budget_parameters, params)
         else:
             print('Did not need to create sheet named:',current_ws_name)        
         # increment the month and year counters
@@ -259,25 +268,25 @@ def create_new_month(workbook, current_datetime, last_sync, budget_parameters):
             
     return first_modified_date
 
-def copy_end_of_month_values(previous_ws, current_ws, beginning_of_month):
+def copy_end_of_month_values(previous_ws, current_ws, beginning_of_month, params):
     #delete existing row if it exists:
-    if current_ws.cell(3, 3) == last_month_copy_description:
+    if current_ws.cell(3, 3) == params.last_month_copy_description:
         current_ws.delete_row(3)
         
-    bottom_row = find_bottom_row(previous_ws)
+    bottom_row = Utility.find_bottom_row(previous_ws)
     end_of_month_values = previous_ws.row_values(bottom_row)
     beginning_of_month_values = [0] * current_ws.col_count # default all values to zero just in case there are new categories
     
     # assign category vlues to the proper category in the next month (may not be the same column)
     for col_counter in range(7, previous_ws.col_count+1):
-        new_col_number = get_column_number(current_ws, previous_ws.cell(2,col_counter).value )
+        new_col_number = Utility.get_column_number(current_ws, previous_ws.cell(2,col_counter).value )
         if new_col_number is not None:
             beginning_of_month_values[new_col_number - 1] =  end_of_month_values[col_counter - 1]
     
     # overwrite the first few lines
-    beginning_of_month_values[0] = beginning_of_month.strftime(date_format)
+    beginning_of_month_values[0] = beginning_of_month.strftime(params.date_format)
     beginning_of_month_values[1] = ''
-    beginning_of_month_values[2] = last_month_copy_description
+    beginning_of_month_values[2] = params.last_month_copy_description
     beginning_of_month_values[3] = ''
     beginning_of_month_values[4] = '0'
     beginning_of_month_values[5] = 'auto-generated'
@@ -285,12 +294,12 @@ def copy_end_of_month_values(previous_ws, current_ws, beginning_of_month):
     
     current_ws.insert_row(beginning_of_month_values, index=3)
 
-def propagate_addition(workbook, init_date):
+def propagate_addition(workbook, init_date, params):
     '''starts from the given date and does all the addition from scratch to avoid errors'''
     
     # handle first worksheet
-    worksheet = get_current_month_ws(workbook, init_date)
-    init_row = get_row_from_date(worksheet, init_date)
+    worksheet = Utility.get_current_month_ws(workbook, init_date, params)
+    init_row = Utility.get_row_from_date(worksheet, init_date, params)
     propagate_addition_ws(worksheet, init_row)
     
     # handle subsequent worksheets
@@ -301,10 +310,10 @@ def propagate_addition(workbook, init_date):
         year_counter+=1
     date_counter = datetime(year_counter, month_counter, 1) # the first day of next month
     previous_ws = worksheet
-    worksheet = get_current_month_ws(workbook, date_counter)
+    worksheet = Utility.get_current_month_ws(workbook, date_counter, params)
     while worksheet is not None:
         # update beginning of the month values
-        copy_end_of_month_values(previous_ws, worksheet, date_counter)
+        copy_end_of_month_values(previous_ws, worksheet, date_counter, params)
         propagate_addition_ws(worksheet, 4) #we don't want to modify the first entry that had the values from last month
         
         # increment to the next first day of the month
@@ -316,20 +325,48 @@ def propagate_addition(workbook, init_date):
         
         # update previous and current worksheets
         previous_ws = worksheet
-        worksheet = get_current_month_ws(workbook, date_counter)
+        worksheet = Utility.get_current_month_ws(workbook, date_counter, params)
 
 def propagate_addition_ws(worksheet, init_row):
-    num_rows = find_bottom_row(worksheet)
+    num_rows = Utility.find_bottom_row(worksheet)
     num_cols = worksheet.col_count
     if init_row<=3:
         init_row =4 # cannot start before the first line of data
+    
+#    init_row -= 1
+#    cell_list = worksheet.range(init_row, 5, num_rows, num_cols)
+#    cell_matrix = []
+#    width = num_cols - 4
+#    while len(cell_list) > 0:
+#        cell_matrix.append(cell_list[0:width])
+#        del cell_list[0:width]
+#    
+#    for row_index in range(1,len(cell_matrix)): # don't use the first row since we don't want to modify the start of the month values
+##        print('current row index:',row_index)
+#        category = cell_matrix[row_index][1].value
+#        amount = float(cell_matrix[row_index][0].value)
+#        affected_column = Utility.get_column_number(worksheet, category)
+#        row_length = len(cell_matrix[row_index])
+#        for col_index in range(2, row_length): # need to neglect the first two columns since they are the amount and category
+#            cell_matrix[row_index][col_index].value = cell_matrix[row_index-1][col_index].value
+##            print('updated the value of cell',row_index,col_index,':', cell_matrix[row_index][col_index].value)
+#            if col_index+1+4 == affected_column: # need to account for the missing columns that were neglected in the index slice and for the 0- to 1- indexing 
+#                cell_matrix[row_index][col_index].value = str( float(cell_matrix[row_index][col_index].value) + amount )
+#    cell_list = []
+#    for row in cell_matrix:
+#        cell_list += row
+#    worksheet.update_cells(cell_list)
+    
+    
     previous_values = worksheet.row_values(init_row-1)
     
     for row_counter in range(init_row, num_rows+1):
+#        print('row:',row_counter)
         values = worksheet.row_values(row_counter)
+#        print('these are the values at row_counter',row_counter,':',values)
         amount = float(values[4])
         category = values[5]
-        affected_column = get_column_number(worksheet, category)
+        affected_column = Utility.get_column_number(worksheet, category)
         cells_to_update = worksheet.range(row_counter, 7, row_counter, num_cols)
         column_counter = 7
         for cell in cells_to_update:
@@ -341,78 +378,83 @@ def propagate_addition_ws(worksheet, init_row):
         worksheet.update_cells(cells_to_update)
         previous_values = worksheet.row_values(row_counter)  
         
-
 ##############################################################################
 def clean_up_form_entries():
     '''deletes form entries over a month old (Based on timestamp, not custom date) even if they haven't been used'''
     # make sure not to delete the last unfrozen row
     pass
 
-def start_new_week(workbook, current_datetime, last_sync, budget_parameters):
+def start_new_week(workbook, current_datetime, last_sync, budget_parameters, params):
     first_modified_date = current_datetime
     weekday_of_last_sync = last_sync.weekday()
     current_first_weekday = datetime(last_sync.year,last_sync.month, last_sync.day) + timedelta(days=7-weekday_of_last_sync)
     week_increment = timedelta(days=7)
     while current_first_weekday <= current_datetime:
         first_modified_date = min(first_modified_date, current_first_weekday)
-        worksheet = get_current_month_ws(workbook, current_first_weekday)
-        weekly_refill(worksheet, current_first_weekday, budget_parameters)
+        worksheet = Utility.get_current_month_ws(workbook, current_first_weekday, params)
+        weekly_refill(worksheet, current_first_weekday, budget_parameters, params)
         current_first_weekday += week_increment
         
     return first_modified_date
 
-def weekly_refill(worksheet, first_date_of_week, budget_parameters):
+def weekly_refill(worksheet, first_date_of_week, budget_parameters, params):
     '''puts weekly refills into each appropriate budget category'''
-    first_day_next_month = datetime(year=first_date_of_week.year,month=first_date_of_week.month +1, day=1)
+    month=first_date_of_week.month +1
+    year=first_date_of_week.year
+    if month > 12:
+        month -= 12
+        year += 1
+    
+    first_day_next_month = datetime(year,month, day=1)
     days_left_in_month = (first_day_next_month-first_date_of_week).days
     if days_left_in_month < 7:
-        partial_weekly_refill(worksheet, first_date_of_week, days_left_in_month, budget_parameters)
+        partial_weekly_refill(worksheet, first_date_of_week, days_left_in_month, budget_parameters, params)
     else:
         # income is negative (since it hasn't happened yet)
         for category in budget_parameters.data_layered_dictionary['Income']['weekly'].keys():
             amount = budget_parameters.data_layered_dictionary['Income']['weekly'][category]
-            add_budget_line_item(worksheet, first_date_of_week, '', 'Weekly Refill for '+category, '', -1*amount, category)
+            Utility.add_budget_line_item(worksheet, first_date_of_week, '', 'Weekly Refill for '+category, '', -1*amount, category, params)
         # expenses are positive
         for category in budget_parameters.data_layered_dictionary['Expenses']['weekly'].keys():
             amount = budget_parameters.data_layered_dictionary['Expenses']['weekly'][category]
-            add_budget_line_item(worksheet, first_date_of_week, '', 'Weekly Refill for '+category, '', amount, category)
+            Utility.add_budget_line_item(worksheet, first_date_of_week, '', 'Weekly Refill for '+category, '', amount, category, params)
 
-def partial_weekly_refill(worksheet, date, num_days, budget_parameters):
+def partial_weekly_refill(worksheet, date, num_days, budget_parameters, params):
     partial = num_days/7.0
     # income is negative (since it hasn't happened yet)
     for category in budget_parameters.data_layered_dictionary['Income']['weekly'].keys():
         amount = budget_parameters.data_layered_dictionary['Income']['weekly'][category]
         amount = round(amount*partial,2)
-        add_budget_line_item(worksheet, date, '', 'Partial Weekly Refill for '+category, '', -1*amount, category)
+        Utility.add_budget_line_item(worksheet, date, '', 'Partial Weekly Refill for '+category, '', -1*amount, category, params)
     # expenses are positive
     for category in budget_parameters.data_layered_dictionary['Expenses']['weekly'].keys():
         amount = budget_parameters.data_layered_dictionary['Expenses']['weekly'][category]
         amount = round(amount*partial,2)
-        add_budget_line_item(worksheet, date, '', 'Partial Weekly Refill for '+category, '', amount, category)
+        Utility.add_budget_line_item(worksheet, date, '', 'Partial Weekly Refill for '+category, '', amount, category, params)
 
-def monthly_refill(worksheet, first_date_of_month, budget_parameters):
+def monthly_refill(worksheet, first_date_of_month, budget_parameters, params):
     '''puts monthly refills into each appropriate budget category'''
     # income is negative (since it hasn't happened yet)
     for category in budget_parameters.data_layered_dictionary['Income']['monthly'].keys():
         amount = budget_parameters.data_layered_dictionary['Income']['monthly'][category]
-        add_budget_line_item(worksheet, first_date_of_month, '', 'Monthly Refill for '+category, '', -1*amount, category)
+        Utility.add_budget_line_item(worksheet, first_date_of_month, '', 'Monthly Refill for '+category, '', -1*amount, category)
     # expenses are positive
     for category in budget_parameters.data_layered_dictionary['Expenses']['monthly'].keys():
         amount = budget_parameters.data_layered_dictionary['Expenses']['monthly'][category]
-        add_budget_line_item(worksheet, first_date_of_month, '', 'Monthly Refill for '+category, '', amount, category)
+        Utility.add_budget_line_item(worksheet, first_date_of_month, '', 'Monthly Refill for '+category, '', amount, category)
     # do partial weekly refills
     days_in_week = 7 - first_date_of_month.weekday()
-    partial_weekly_refill(worksheet, first_date_of_month, days_in_week, budget_parameters)
+    partial_weekly_refill(worksheet, first_date_of_month, days_in_week, budget_parameters, params)
     
 
 
 
-def move_and_delete_matches(workbook, app_input, bank_data, current_datetime):
+def move_and_delete_matches(workbook, app_input, bank_data, current_datetime, params):
     '''takes the matched bank entries and app entries, then inserts bank entries into the appropriate worksheets 
     and deletes the old information from the input sheets and moves outstanding bank entries into their own worksheet
     Also marks app entries that are left as 'Included' '''
     
-    worksheet_bank_unresolved = workbook.worksheet(unresolved_items_ws)
+    worksheet_bank_unresolved = workbook.worksheet(params.unresolved_items_ws)
     first_modified_date = current_datetime
     total_unresolved = 0
     
@@ -420,7 +462,7 @@ def move_and_delete_matches(workbook, app_input, bank_data, current_datetime):
     rows_to_delete = []
     unmatched_app_entries = []
     
-    worksheet_app_entries = workbook.worksheet(expense_input_ws)
+    worksheet_app_entries = workbook.worksheet(params.expense_input_ws)
     for app_entry in app_input:
         if app_entry.is_matched:
             rows_to_delete.append(app_entry.row)
@@ -438,7 +480,7 @@ def move_and_delete_matches(workbook, app_input, bank_data, current_datetime):
     
         
     # delete all bank entries
-    worksheet_bank_entries = workbook.worksheet(raw_bank_data_ws)
+    worksheet_bank_entries = workbook.worksheet(params.raw_bank_data_ws)
     num_rows = worksheet_bank_entries.row_count
     for row in range(2,num_rows+1):
         worksheet_bank_entries.delete_row(2)
@@ -450,7 +492,7 @@ def move_and_delete_matches(workbook, app_input, bank_data, current_datetime):
         worksheet_bank_unresolved.delete_row(2)
         
     #delete all budget app items
-    worksheet_budget_balancer = workbook.worksheet(budget_balancer_ws)
+    worksheet_budget_balancer = workbook.worksheet(params.budget_balancer_ws)
     num_rows = worksheet_budget_balancer.row_count
     worksheet_budget_balancer.add_rows(1) # add an extra blank row so there is still one left
     for row in range(2,num_rows+1):
@@ -466,21 +508,21 @@ def move_and_delete_matches(workbook, app_input, bank_data, current_datetime):
             worksheet_bank_unresolved.append_row(values)
             total_unresolved += 1
         else:
-            worksheet = get_current_month_ws(workbook, bank_entry.date)
-            add_budget_line_item(worksheet, 
-                                 bank_entry.date, 
-                                 bank_entry.check_number, 
-                                 bank_entry.description, 
-                                 bank_entry.app_description, 
-                                 bank_entry.amount, 
-                                 bank_entry.category)
+            worksheet = Utility.get_current_month_ws(workbook, bank_entry.date, params)
+            Utility.add_budget_line_item(worksheet, 
+                                         bank_entry.date, 
+                                         bank_entry.check_number, 
+                                         bank_entry.description, 
+                                         bank_entry.app_description, 
+                                         bank_entry.amount, 
+                                         bank_entry.category)
             # convert date to datetime
             bank_date = datetime(year=bank_entry.date.year, month=bank_entry.date.month, day=bank_entry.date.day)
             first_modified_date = min(first_modified_date, bank_date)
     
     return first_modified_date, unmatched_app_entries, total_unresolved
 
-def remove_duplicate_bank_entries(workbook, bank_data):
+def remove_duplicate_bank_entries(workbook, bank_data, params):
     '''before bank entries are assigned, we need to make sure they haven't already been inputted and 
     categorized (or put in the outstanding worksheet)'''
     # TODO: this will need to be modified to account for multi-category expenses (since the amount will not be the same)
@@ -490,14 +532,14 @@ def remove_duplicate_bank_entries(workbook, bank_data):
     entires_matched = [] # this will help handle dulplicates by tracking wich ones have been used to make a match
     for bank_entry in bank_data:
         duplicate = False
-        worksheet = get_current_month_ws(workbook, bank_entry.date)
+        worksheet = Utility.get_current_month_ws(workbook, bank_entry.date, params)
         if worksheet is None:
             bank_entries_to_keep.append(bank_entry)
             continue 
-        row = get_row_from_date(worksheet, bank_entry.date)
-        num_rows = find_bottom_row(worksheet)
+        row = Utility.get_row_from_date(worksheet, bank_entry.date, params)
+        num_rows = Utility.find_bottom_row(worksheet)
         if row <= num_rows:
-            compare_date = datetime.strptime(worksheet.cell(row,1).value, date_format).date()
+            compare_date = datetime.strptime(worksheet.cell(row,1).value, params.date_format).date()
             while bank_entry.date == compare_date:
                 if bank_entry.description == worksheet.cell(row,3).value and bank_entry.amount == float(worksheet.cell(row,5).value): # need to compare amounts as floats, otherwise having/not having a decimal can throw things off if you compare strings
                     ID = [worksheet.title,row]
@@ -508,7 +550,7 @@ def remove_duplicate_bank_entries(workbook, bank_data):
                 row +=1
                 if row > num_rows:
                     break 
-                compare_date = datetime.strptime(worksheet.cell(row,1).value, date_format).date()
+                compare_date = datetime.strptime(worksheet.cell(row,1).value, params.date_format).date()
         if not duplicate:
             bank_entries_to_keep.append(bank_entry)
     return bank_entries_to_keep
@@ -520,11 +562,11 @@ def merge_bank_data_and_unresolved(bank_data, bank_unresolved):
     na, nb = Counter(a), Counter(b)
     return list(Counter({k: max((na[k], nb[k])) for k in set(a + b)}).elements())
 
-def delete_old_bank_data(bank_data):
+def delete_old_bank_data(bank_data, params):
     '''removes all bank data that is older than the earliest_tracking_date'''
     bank_data_to_keep = []
     for bank_entry in bank_data:
-        if bank_entry.date >= earliest_tracking_date:
+        if bank_entry.date >= params.earliest_tracking_date:
             bank_data_to_keep.append(bank_entry)
     return bank_data_to_keep
 
@@ -547,13 +589,13 @@ def assign_categories(app_input, bank_data):
         
 def recalculate_monthly_net(workbook, earliest_modified_date):
     most_recent_net = None
-    all_worksheets = get_all_ws_names(workbook)
+    all_worksheets = Utility.get_all_ws_names(workbook)
     date_counter = earliest_modified_date.replace(day=1,hour=0,minute=0,second=0)
-    worksheet_name = Month_names[date_counter.month] + ' ' + str(date_counter.year)
+    worksheet_name = params.Month_names[date_counter.month] + ' ' + str(date_counter.year)
     while worksheet_name in all_worksheets:
-        worksheet = get_current_month_ws(workbook, date_counter)
+        worksheet = Utility.get_current_month_ws(workbook, date_counter, params)
         first_row = worksheet.row_values(3)[6:]
-        last_row = worksheet.row_values(find_bottom_row(worksheet))[6:]
+        last_row = worksheet.row_values(Utility.find_bottom_row(worksheet))[6:]
         first_row_sum = sum(str_list_to_float(first_row)) 
         last_row_sum = sum(str_list_to_float(last_row))
         worksheet.update_cell(1,3,str(last_row_sum - first_row_sum))
@@ -564,7 +606,7 @@ def recalculate_monthly_net(workbook, earliest_modified_date):
             date_counter = date_counter.replace(month=date_counter.month+1)
         else:
             date_counter = date_counter.replace(year=date_counter.year+1,month=1)
-        worksheet_name = Month_names[date_counter.month] + ' ' + str(date_counter.year)
+        worksheet_name = params.Month_names[date_counter.month] + ' ' + str(date_counter.year)
     return most_recent_net 
 
 def str_list_to_float(strings):
@@ -574,7 +616,7 @@ def str_list_to_float(strings):
 def get_update_page_info(workbook, budget_parameters, unmatched_app_entries, current_datetime):
     '''returns a clean dictionary with "category:[amount remaining, next refill date, refill amount]"
     also adds in the unmatched app entries too'''
-    worksheet = get_current_month_ws(workbook, current_datetime)
+    worksheet = Utility.get_current_month_ws(workbook, current_datetime, params)
     next_first_weekday = datetime(current_datetime.year,current_datetime.month, current_datetime.day) + timedelta(days=7-current_datetime.weekday())
 #    next_first_weekday_str = next_first_weekday.strftime(date_format)
     if current_datetime.month < 12:
@@ -583,7 +625,7 @@ def get_update_page_info(workbook, budget_parameters, unmatched_app_entries, cur
         next_first_month = datetime(current_datetime.year + 1, 1, 1)
 #    next_first_month_str = next_first_month.strftime(date_format)
     category_row = worksheet.row_values(2)[6:]
-    last_row = worksheet.row_values(find_bottom_row(worksheet))[6:]
+    last_row = worksheet.row_values(Utility.find_bottom_row(worksheet))[6:]
     last_row_values = str_list_to_float(last_row)
     output_dictionary = {}
     index = 0 
@@ -604,9 +646,9 @@ def get_update_page_info(workbook, budget_parameters, unmatched_app_entries, cur
     
     return output_dictionary
 
-def update_feedback_page(workbook, current_datetime, total_unresolved, output_dictionary, most_recent_net, projected_net):
+def update_feedback_page(workbook, current_datetime, total_unresolved, output_dictionary, most_recent_net, projected_net, params):
     '''clears the feedback page and updates it with the new budget category values in one step. Also recrods the "sync" time and date '''
-    worksheet = workbook.worksheet(feedpage_ws)
+    worksheet = workbook.worksheet(params.feedpage_ws)
     
     num_rows = worksheet.row_count
     num_categories = len(output_dictionary)
@@ -631,13 +673,13 @@ def update_feedback_page(workbook, current_datetime, total_unresolved, output_di
         cell_list[cell_counter].value = str(values[0])
         cell_counter += 1
         
-        cell_list[cell_counter].value = values[1].strftime(date_format)
+        cell_list[cell_counter].value = values[1].strftime(params.date_format)
         cell_counter += 1
         
         cell_list[cell_counter].value = str(values[2])
         cell_counter += 1
     
-    update_synctime(worksheet, current_datetime)
+    update_synctime(worksheet, current_datetime, params)
     # update net values
     worksheet.update_cell(2,2,str(most_recent_net))
     
@@ -646,30 +688,50 @@ def update_feedback_page(workbook, current_datetime, total_unresolved, output_di
     # update expense categories
     worksheet.update_cells(cell_list)  
     
-def update_synctime(worksheet, current_datetime):
+def update_synctime(worksheet, current_datetime, params):
     # update sync time
-    print('New Sync Time is:',current_datetime.strftime(datetime_format))
-    worksheet.update_cell(1,2,current_datetime.strftime(datetime_format))
+    print('New Sync Time is:',current_datetime.strftime(params.datetime_format))
+    worksheet.update_cell(1,2,current_datetime.strftime(params.datetime_format))
 
-def balance_budget(workbook, budget_balancer_input, current_datetime):
+def balance_budget(workbook, budget_balancer_input, current_datetime, params):
     '''manages input from the budget balancer form. Allows you to modify budget parameters permenently, retroacticely, or just one-time. Also allows you to do one-time transfers between expense categories. Also delete the rows of the form entries that are used'''
-    worksheet = get_current_month_ws(workbook, current_datetime)
+    worksheet = Utility.get_current_month_ws(workbook, current_datetime, params)
     for item in budget_balancer_input:
         if item.is_transfer:
-            add_budget_line_item(worksheet, current_datetime, '', 'Budget Balancer Decrease', item.notes, item.amount, item.category)
-            add_budget_line_item(worksheet, current_datetime, '', 'Budget Balancer Increase', item.notes, item.amount_2, item.category_2)
+            Utility.add_budget_line_item(worksheet, current_datetime, '', 'Budget Balancer Decrease', item.notes, item.amount, item.category)
+            Utility.add_budget_line_item(worksheet, current_datetime, '', 'Budget Balancer Increase', item.notes, item.amount_2, item.category_2)
         else: # for permanent budget category adjustments
-            pass # TODO: need to write this!
+            pass # TODO: need to write this! The permanent budget category change doesn't work
+
+def output_update(message, workbook = None):
+    if workbook is None:
+        workbook = get_workbook()
+    worksheet = workbook.worksheet(params.feedpage_ws)
+    worksheet.update_cell(1,3,message)
+
+#############################################################################
+#############################################################################
+
+params = Params()
 
 # use this to redo all the addition from 10-1-17 and on
-#full_propogation()
+#full_propagation(params)
+#print('successfully propagated addition from the beginning')
 
-if run_online:
+if params.run_online:
     try:
-        main()
+        output_update('Currently Working')
+        main(params)
+        output_update('Complete')
     except:
         print('Program crashed :(')
+        try:
+            output_update('Program crashed')
+        except:
+            print('Even the feedback crashed')
 else:
-    main()
+    output_update('Currently Working')
+    main(params)
+    output_update('Complete')
 #    main(fake_date=datetime(year=2017,month=9,day=5))
 

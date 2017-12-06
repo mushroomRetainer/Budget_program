@@ -1,5 +1,7 @@
 
-from params import *
+from datetime import datetime, timedelta
+import itertools
+from collections import Counter # needed for complex merging to preserve duplicates in individual lists, but not in both
 
 class App_entry:
     ## order of the entries in "values":
@@ -31,14 +33,15 @@ class App_entry:
     # self.is_matched
     # self.original_values
     
-    def __init__(self, row, values):
+    def __init__(self, row, values, params):
         self.row = row # keep in mind this is the spreadsheet row, so it is 1-indexed
         self.original_values = values
+        self.params = params
         
         if values[3] != '':
-            self.date = datetime.strptime(values[3], date_format).date()
+            self.date = datetime.strptime(values[3], self.params.date_format).date()
         elif values[0] != '':
-            self.date = datetime.strptime(values[0], datetime_format).date()
+            self.date = datetime.strptime(values[0], self.params.datetime_format).date()
         
         self.who = values[1]
         
@@ -110,10 +113,11 @@ class Bank_entry:
     # self.categories
     # self.amounts
     
-    def __init__(self, row, values):
+    def __init__(self, row, values, params):
+        self.params = params
         self.row = row
         self.original_values = values
-        self.date = datetime.strptime(values[0], date_format).date()
+        self.date = datetime.strptime(values[0], self.params.date_format).date()
         self.check_number = values[1]
         self.description = values[2]
         
@@ -146,7 +150,7 @@ class Bank_entry:
     def attempt_match_approximate(self, app_entry):
         if self.is_matched or app_entry.is_matched or app_entry.is_combined:
             return False
-        elif abs(self.date - app_entry.date) <= date_match_tolerance and self.amount == app_entry.amount:
+        elif abs(self.date - app_entry.date) <= self.params.date_match_tolerance and self.amount == app_entry.amount:
             self.category = app_entry.category
             self.is_matched = True
             self.app_description = app_entry.who + ": " + app_entry.description
@@ -191,7 +195,7 @@ class Bank_entry:
         #get subset of app_entry list that are combined and have the exact date
         app_entry_list_combined = []
         for app_entry in app_entry_list:
-            if app_entry.is_combined and abs(self.date - app_entry.date) <= date_match_tolerance:
+            if app_entry.is_combined and abs(self.date - app_entry.date) <= self.params.date_match_tolerance:
                 app_entry_list_combined.append(app_entry)
         if len(app_entry_list_combined) == 0:
             return False
@@ -234,7 +238,7 @@ class Bank_entry:
             hash_str+=i
         return hash(hash_str)
     
-    
+
 class Budget_parameters:
     
     # this is for the layered dictionary: 
@@ -308,9 +312,10 @@ class Budget_balancer_entry:
     # self.affect_current
     # self.is_permanent
     
-    def __init__(self, row, values):
+    def __init__(self, row, values, params):
         self.row = row
-        self.date = datetime.strptime(values[0], datetime_format)
+        self.params = params
+        self.date = datetime.strptime(values[0], self.params.datetime_format)
         if values[1] == 'Transfer Money':
             self.is_transfer = True
             self.category = values[2]
