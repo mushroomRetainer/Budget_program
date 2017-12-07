@@ -194,7 +194,7 @@ def clean_input_up(app_input_raw, bank_data_raw, bank_unresolved_raw, budget_par
     row_counter = 2 # since there is a header
     for values in budget_balancer_input_raw:
         if values[0] != '': # check for blank line by looking at the first value
-            budget_balancer_input.append(Budget_balancer_entry(row_counter, values))
+            budget_balancer_input.append(Budget_balancer_entry(row_counter, values, params))
         row_counter +=1
         
     return app_input, bank_data, bank_unresolved, budget_parameters, budget_balancer_input
@@ -699,8 +699,8 @@ def balance_budget(workbook, budget_balancer_input, current_datetime, params):
     worksheet = Utility.get_current_month_ws(workbook, current_datetime, params)
     for item in budget_balancer_input:
         if item.is_transfer:
-            Utility.add_budget_line_item(worksheet, current_datetime, '', 'Budget Balancer Decrease', item.notes, item.amount, item.category)
-            Utility.add_budget_line_item(worksheet, current_datetime, '', 'Budget Balancer Increase', item.notes, item.amount_2, item.category_2)
+            Utility.add_budget_line_item(worksheet, current_datetime, '', 'Budget Balancer Decrease', item.notes, item.amount, item.category, params)
+            Utility.add_budget_line_item(worksheet, current_datetime, '', 'Budget Balancer Increase', item.notes, item.amount_2, item.category_2, params)
         else: # for permanent budget category adjustments
             pass # TODO: need to write this! The permanent budget category change doesn't work
 
