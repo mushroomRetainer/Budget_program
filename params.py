@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 class Params:
     # adjustable parameters
     def __init__(self):
-        self.run_online = False
+        self.run_online = True
         
         self.Month_names = ['month0','Jan','Feb','March','April','May','June','July','Aug','Sept','Oct','Nov','Dec']
         
