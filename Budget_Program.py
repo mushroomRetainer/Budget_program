@@ -79,7 +79,6 @@ def main(params, fake_date=None):
     bank_data = merge_bank_data_and_unresolved(bank_data, bank_unresolved)
     
     is_new_week, is_new_month = is_new_week_or_month(current_datetime, last_sync)
-    
     print('Checking for Updates')
     if not (has_updates(app_input, bank_data, budget_balancer_input) or is_new_week or is_new_month):
         print('There are no updates, so the program will now update the sync time and end')
@@ -156,7 +155,7 @@ def is_new_week_or_month(current_datetime, last_sync):
     is_new_month = False
     if (current_datetime - last_sync).days >=7 or current_datetime.weekday() < last_sync.weekday():
         is_new_week = True
-    if current_datetime.month > last_sync.month:
+    if current_datetime.month > last_sync.month or current_datetime.year > last_sync.year:
         is_new_month = True
     return is_new_week, is_new_month
 
@@ -221,7 +220,7 @@ def create_new_month(workbook, current_datetime, last_sync, budget_parameters, p
     year_counter = last_sync.year
     num_categories = budget_parameters.num_categories
     
-    while year_counter <= current_datetime.year and month_counter <= current_datetime.month:
+    while year_counter < current_datetime.year or month_counter <= current_datetime.month:
         current_ws_name = params.Month_names[month_counter] + ' ' + str(year_counter)
         if not current_ws_name in worksheet_names:
             worksheet = workbook.add_worksheet(current_ws_name, 3, 6 + num_categories)
@@ -253,7 +252,7 @@ def create_new_month(workbook, current_datetime, last_sync, budget_parameters, p
             if previous_ws_name in worksheet_names:
                 previous_ws = workbook.worksheet(previous_ws_name)
                 copy_end_of_month_values(previous_ws, worksheet, beginning_of_month, params)
-                
+                                
             print('Created sheet named:',current_ws_name,'and added initial values.')
             # do monthly refills
             print('Doing Monthly Refills for',current_ws_name)
@@ -437,11 +436,11 @@ def monthly_refill(worksheet, first_date_of_month, budget_parameters, params):
     # income is negative (since it hasn't happened yet)
     for category in budget_parameters.data_layered_dictionary['Income']['monthly'].keys():
         amount = budget_parameters.data_layered_dictionary['Income']['monthly'][category]
-        Utility.add_budget_line_item(worksheet, first_date_of_month, '', 'Monthly Refill for '+category, '', -1*amount, category)
+        Utility.add_budget_line_item(worksheet, first_date_of_month, '', 'Monthly Refill for '+category, '', -1*amount, category, params)
     # expenses are positive
     for category in budget_parameters.data_layered_dictionary['Expenses']['monthly'].keys():
         amount = budget_parameters.data_layered_dictionary['Expenses']['monthly'][category]
-        Utility.add_budget_line_item(worksheet, first_date_of_month, '', 'Monthly Refill for '+category, '', amount, category)
+        Utility.add_budget_line_item(worksheet, first_date_of_month, '', 'Monthly Refill for '+category, '', amount, category, params)
     # do partial weekly refills
     days_in_week = 7 - first_date_of_month.weekday()
     partial_weekly_refill(worksheet, first_date_of_month, days_in_week, budget_parameters, params)
@@ -664,6 +663,13 @@ def update_feedback_page(workbook, current_datetime, total_unresolved, output_di
     cell_list = worksheet.range(6, 1, num_rows, 4)
     cell_counter = 0
     categories = list(output_dictionary.keys())
+    
+    # fix any captitalization problems
+    for i in range(len(categories)):
+        old_category = categories[i]
+        categories[i] = " ".join(w.capitalize() for w in categories[i].split()) #https://stackoverflow.com/questions/1549641/how-to-capitalize-the-first-letter-of-each-word-in-a-string-python
+        output_dictionary[categories[i]] = output_dictionary[old_category]
+    
     categories.sort()
     for category in categories:
         values =  output_dictionary[category]
