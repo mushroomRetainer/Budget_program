@@ -443,7 +443,8 @@ def monthly_refill(worksheet, first_date_of_month, budget_parameters, params):
         Utility.add_budget_line_item(worksheet, first_date_of_month, '', 'Monthly Refill for '+category, '', amount, category, params)
     # do partial weekly refills
     days_in_week = 7 - first_date_of_month.weekday()
-    partial_weekly_refill(worksheet, first_date_of_month, days_in_week, budget_parameters, params)
+    if first_date_of_month.weekday() != 0:
+        partial_weekly_refill(worksheet, first_date_of_month, days_in_week, budget_parameters, params)
     
 
 
