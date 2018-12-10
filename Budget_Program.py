@@ -21,6 +21,9 @@ from supporting_classes import App_entry, Bank_entry, Budget_parameters, Budget_
 
 def main(params, fake_date=None):
     '''driving function''' 
+    # TODO just rewrite this whole mess. Also, use more intellegent updating, such as creating a new sheet, then renaming the new/old one, then deleting the old one
+    
+    # TODO: fix it so it will still update parameteres even if "there are no updates"
     # done: move the json file into a different folder on the pi and on my other computers so it isn't put on the github (might need to delete and recreate the github setup)
     # done: create an offline budget sheet to play with and add an optional parameter to use that sheet for testing new features
     # TODO: write a function that reads in rows in batch and returns a list of lists of cells with row/col indexes 
@@ -80,11 +83,11 @@ def main(params, fake_date=None):
     
     is_new_week, is_new_month = is_new_week_or_month(current_datetime, last_sync)
     print('Checking for Updates')
-    if not (has_updates(app_input, bank_data, budget_balancer_input) or is_new_week or is_new_month):
-        print('There are no updates, so the program will now update the sync time and end')
-        update_synctime(workbook.worksheet(params.feedpage_ws), current_datetime, params)
-        print('Complete')
-        return #if there are not updates
+#    if not (has_updates(app_input, bank_data, budget_balancer_input) or is_new_week or is_new_month):
+#        print('There are no updates, so the program will now update the sync time and end')
+#        update_synctime(workbook.worksheet(params.feedpage_ws), current_datetime, params)
+#        print('Complete')
+#        return #if there are not updates
     
     earliest_modified_date = current_datetime
     
@@ -220,7 +223,11 @@ def create_new_month(workbook, current_datetime, last_sync, budget_parameters, p
     year_counter = last_sync.year
     num_categories = budget_parameters.num_categories
     
-    while year_counter < current_datetime.year or month_counter <= current_datetime.month:
+    month_year_counter = datetime(year = last_sync.year, month = last_sync.month, day = 1)
+    target_month_year = datetime(year = current_datetime.year, month = current_datetime.month, day = 1)
+    
+    #while year_counter < current_datetime.year or month_counter <= current_datetime.month:
+    while month_year_counter <= target_month_year:
         current_ws_name = params.Month_names[month_counter] + ' ' + str(year_counter)
         if not current_ws_name in worksheet_names:
             worksheet = workbook.add_worksheet(current_ws_name, 3, 6 + num_categories)
@@ -264,7 +271,9 @@ def create_new_month(workbook, current_datetime, last_sync, budget_parameters, p
         if month_counter > 12:
             month_counter -= 12
             year_counter += 1
-            
+        month_year_counter = datetime(year=year_counter, month=month_counter, day=1)
+#        print('\n',year_counter,'<',current_datetime.year,'or',month_counter,'<=',current_datetime.month)
+#        print(month_year_counter,'<',target_month_year)
     return first_modified_date
 
 def copy_end_of_month_values(previous_ws, current_ws, beginning_of_month, params):
@@ -722,24 +731,38 @@ def output_update(message, workbook = None):
 
 params = Params()
 
+#workbook = get_workbook()
+#worksheet = workbook.worksheet(params.feedpage_ws)
+#delete_year = 2019
+#for worksheet in workbook.worksheets():
+#    title_array = worksheet.title.split(' ')
+#    try:
+#        if int(title_array[1]) >= delete_year:
+#            workbook.del_worksheet(worksheet)
+#            print('deleted',title_array)
+#    except Exception:
+#        pass
+        
+    
+
 # use this to redo all the addition from 10-1-17 and on
 #full_propagation(params)
 #print('successfully propagated addition from the beginning')
-
-if params.run_online:
-    try:
-        output_update('Currently Working')
-        main(params)
-        output_update('Complete')
-    except:
-        print('Program crashed :(')
+if True:
+    if params.run_online:
         try:
-            output_update('Program crashed')
+            output_update('Currently Working')
+            main(params)
+            output_update('Complete')
         except:
-            print('Even the feedback crashed')
-else:
-    output_update('Currently Working')
-    main(params)
-    output_update('Complete')
-#    main(fake_date=datetime(year=2017,month=9,day=5))
+            print('Program crashed :(')
+            try:
+                output_update('Program crashed')
+            except:
+                print('Even the feedback crashed')
+    else:
+        output_update('Currently Working')
+    #    main(params)
+        main(params, fake_date=datetime(year=2018,month=12,day=1))
+        output_update('Complete')
 
