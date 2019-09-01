@@ -12,7 +12,7 @@ class Params:
         self.date_format = '%m/%d/%Y' # hopefully the same as BECU to cut down on formatting
         self.last_month_copy_description = 'Copy from End of Last Month'
         self.date_match_tolerance = timedelta(days=3)
-        self.earliest_tracking_date = datetime(year=2017,month=10,day=1).date() # anything before this will be deleted
+        self.earliest_tracking_date = datetime(year=2019,month=1,day=1).date() # anything before this will be deleted
         # other sheets are created and named dynamically based on month/year
         
         # inpput worksheet names

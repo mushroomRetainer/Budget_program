@@ -133,7 +133,7 @@ def full_propagation(params):
     print('Getting Workbook')
     workbook = get_workbook()
     print('Doing a full propagation of addition')
-    propagate_addition(workbook, datetime(year=2017,month=10,day=1), params)
+    propagate_addition(workbook, datetime(year=2019,month=1,day=1), params)
 
 def get_workbook():
     # use creds to create a client to interact with the Google Drive API
@@ -551,7 +551,11 @@ def remove_duplicate_bank_entries(workbook, bank_data, params):
         if row <= num_rows:
             compare_date = datetime.strptime(worksheet.cell(row,1).value, params.date_format).date()
             while bank_entry.date == compare_date:
-                if bank_entry.description == worksheet.cell(row,3).value and bank_entry.amount == float(worksheet.cell(row,5).value): # need to compare amounts as floats, otherwise having/not having a decimal can throw things off if you compare strings
+                # we want the comparison to happen ignorring all whitespace, https://stackoverflow.com/questions/3739909/how-to-strip-all-whitespace-from-string
+                description_1 = "".join(bank_entry.description.split()) 
+                description_2 = "".join(worksheet.cell(row,3).value.split())
+#                if bank_entry.description == worksheet.cell(row,3).value and bank_entry.amount == float(worksheet.cell(row,5).value): # need to compare amounts as floats, otherwise having/not having a decimal can throw things off if you compare strings
+                if description_1 == description_2 and bank_entry.amount == float(worksheet.cell(row,5).value): # need to compare amounts as floats, otherwise having/not having a decimal can throw things off if you compare strings
                     ID = [worksheet.title,row]
                     if ID not in entires_matched:
                         duplicate = True
@@ -748,6 +752,7 @@ params = Params()
 # use this to redo all the addition from 10-1-17 and on
 #full_propagation(params)
 #print('successfully propagated addition from the beginning')
+
 if True:
     if params.run_online:
         try:
